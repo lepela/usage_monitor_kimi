@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "usage-monitor-kimi"
+version = "0.1.0.dev0"
+description = "Kimi Code 로컬 사용량 모니터"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+usage-monitor-kimi = "usage_monitor_kimi.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["usage_monitor_kimi*"]
