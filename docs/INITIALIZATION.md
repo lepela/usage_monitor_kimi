@@ -58,7 +58,7 @@
 - Kimi Code(데스크톱·CLI)는 로컬 서버를 띄우고 REST API를 제공합니다. 실행 중 인스턴스는 `~/.kimi-code/server/instances/*.json`에 `pid`·`port`·`host_version` 등으로 등록되고, 인증은 `~/.kimi-code/server.token` 파일 값을 `Authorization: Bearer` 헤더에 담아 통과합니다.
 - **GET /api/v1/oauth/usage**가 공식 쿼터 엔드포인트입니다(로컬 서버의 OpenAPI 문서 108개 경로에 이 경로가 포함되어 있음을 같은 날 확인했습니다).
 - 응답 스키마: `data.quota.usages` 아래 `limit5h`·`limit7d`(레거시 플랜만 존재, 현재 플랜 응답에는 없음)·`monthTotal`·`monthCode` 각각 `{usedRatio, resetAt}`, 그리고 `data.quota.extraUsage`(미사용이면 `null`, 사용이면 `{balanceCents, totalCents, monthlyChargeLimitEnabled}`).
-- `usedRatio`는 스키마상 `number`이지만 정수로 낮아옵니다. 2026-10-15에 6시간 동안 5분 간격 73샘플로 실험한 결과, 반나절 이상의 실사용(서브에이전트 작업 포함)에도 모든 창의 `usedRatio`는 0을 유지했습니다. `limit5h`의 `resetAt`은 요청 때마다 밀리는 롤링이 아니라 고정 5시간 버킷 경계에서만 점프합니다(10:19:08Z → 15:19:08Z, 정확히 +5시간, 앵커 19:19:08 KST). 완주한 버킷의 기록이 0이므로, 이 계정의 소비가 이 계량기에 잡히지 않는다(계량 파이프라인 미연결 또는 표시 단위가 사용량보다 큼)로 판정하고 제품 피드백 대상으로 둡니다. 모니터의 유효 신호는 `resetAt` 버킷 롤오버와 `usedRatio`의 0→비-0 전환입니다.
+- `usedRatio`는 0~1 범위의 JSON number입니다. 값이 없는 창은 `0`으로, 사용이 잡히면 소수로 납니다. 2026-10-15에 6시간 동안 5분 간격 73샘플로 실험한 결과, 반나절 이상의 실사용에도 모든 창의 `usedRatio`는 0을 유지했습니다. `limit5h`의 `resetAt`은 요청 때마다 밀리는 롤링이 아니라 고정 5시간 버킷 경계에서만 점프합니다(10:19:08Z → 15:19:08Z, 정확히 +5시간, 앵커 19:19:08 KST). 2026-10-16에 같은 채널을 다시 조회하니 실사용이 실시간으로 잡혀 있었습니다(5시간 창 0.1409, 월 전체·월 코드 0.0038). 계정 소비는 구독 주기 기준으로 반영에 시간이 걸리는 것으로 보고, 10-15의 전량 0은 반영 지연으로 해석합니다. 모니터의 유효 신호는 `resetAt` 버킷 롤오버와 `usedRatio`의 추세입니다.
 
 이 채널을 쓰는 `quota` 명령을 본 도구에 추가했습니다. 대조 방법은 다음 세 가지입니다.
 
