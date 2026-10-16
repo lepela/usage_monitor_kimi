@@ -30,7 +30,7 @@
 | `llm.request` | `agentId`, `model`, `modelAlias`, `provider`, `thinkingEffort` |
 | `turn.ended` | `agentId`, `turnId`, `durationMs`, `reason` |
 
-확인한 샘플에서 `usage.record`와 `token_counting.measured`는 건수가 같고(요청당 1건씩), `usage`의 4개 키는 항상 모두 있었습니다. `agent.message.appended`는 메시지마다 남지만 `message.meta.usage`는 어시스턴트 메시지에만 붙습니다.
+확인한 샘플에서 `usage.record`와 `token_counting.measured`는 건수가 같고(요청당 1건씩), `usage`의 4개 키는 항상 모두 있었습니다. 실데이터에서 두 이벤트의 `time`은 같은 요청끼리도 1~2ms 어긋납니다 — 타임스탬프 집합으로 직접 비교하면 의사 불일치가 보이므로 건수·합계로 봅니다. `agent.message.appended`는 메시지마다 남지만 `message.meta.usage`는 어시스턴트 메시지에만 붙습니다.
 
 수집 대상이 아닌 이벤트(`turn.prompt`, `context.append_loop_event` 등)는 무시합니다. 특히 `agent.message.appended`의 `message.message.content[]` 계열과 `subagent.completed`의 `resultSummary`, `turn.prompt`의 `input` 같은 대화 본문·프롬프트 키에는 접근하지 않습니다. 파서가 읽는 키는 위 허용 목록뿐입니다.
 
