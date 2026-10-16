@@ -72,7 +72,7 @@ def _entry_rewritten(entry, current, path=None, offset=0):
 
     크기가 줄거나 오프셋이 파일 끝을 넘으면 재작성으로 바로 봅니다.
     그 외에는 오프셋 직전 바이트의 tail-hash와 저장값을 비교합니다.
-    내용이 같으면(이어 쓰기) 이전 오프셋에서 이어 읽고, 다륾면 재작성으로
+    내용이 같으면(이어 쓰기) 이전 오프셋에서 이어 읽고, 다르면 재작성으로
     보고 처음부터 다시 읽습니다. 크기·mtime이 모두 같은 내용 교체는
     감지하지 못합니다(잔여 한계). 더 큰 파일로의 재작성도 오프셋 이전
     바이트가 바뀐 경우에만 감지합니다.
@@ -169,7 +169,7 @@ def read_wire(path, start_offset=0, agent=None, session=None, workspace=None,
                     if not finished:
                         # 예산·파일 끝으로 큰 줄 중간에 멈췄습니다.
                         # 이미 oversized로 셌으므로 소진 지점부터 다음 실행이
-                        # 이어 걸너뜁니다.
+                        # 이어 건너뜁니다.
                         skipping_out = True
                 continue
             if not line.endswith(b"\n"):
