@@ -1,3 +1,4 @@
+import http.client
 import io
 import json
 import os
@@ -213,6 +214,23 @@ class FetchUsageTest(unittest.TestCase):
                     if isinstance(h, urllib.request.ProxyHandler)]
         self.assertEqual(handlers, [])
 
+    def test_fetch_maps_bad_status_line(self):
+        def fake_urlopen(request, timeout):
+            raise http.client.BadStatusLine("가짜 상태 줄")
+
+        with self.assertRaises(QuotaError) as ctx:
+            fetch_usage(59999, SYNTHETIC_TOKEN, urlopen=fake_urlopen)
+        self.assertIn("HTTP 규약", str(ctx.exception))
+        self.assertNotIn(SYNTHETIC_TOKEN, str(ctx.exception))
+
+    def test_fetch_maps_incomplete_read(self):
+        def fake_urlopen(request, timeout):
+            raise http.client.IncompleteRead(b"partial")
+
+        with self.assertRaises(QuotaError) as ctx:
+            fetch_usage(59999, SYNTHETIC_TOKEN, urlopen=fake_urlopen)
+        self.assertIn("HTTP 규약", str(ctx.exception))
+
     def test_fetch_ignores_env_proxy(self):
         import threading
         from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -232,13 +250,63 @@ class FetchUsageTest(unittest.TestCase):
         try:
             with mock.patch.dict(os.environ,
                                  {"HTTP_PROXY": "http://255.255.255.255:9",
-                                  "http_proxy": "http://255.255.255.255:9"}):
+                                  "http_proxy": "http://255.255.255.255:9",
+                                  "NO_PROXY": "", "no_proxy": ""}):
                 payload = fetch_usage(server.server_port, SYNTHETIC_TOKEN)
             self.assertEqual(payload, {})
         finally:
             server.shutdown()
             server.server_close()
             thread.join(timeout=5)
+
+    def test_redirect_is_not_followed_to_other_server(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        hits = []
+
+        class TargetHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        target = HTTPServer(("127.0.0.1", 0), TargetHandler)
+
+        class SourceHandler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header(
+                    "Location",
+                    f"http://127.0.0.1:{target.server_port}/api/v1/oauth/usage")
+                self.end_headers()
+
+        source = HTTPServer(("127.0.0.1", 0), SourceHandler)
+        threads = [threading.Thread(target=srv.serve_forever, daemon=True)
+                   for srv in (source, target)]
+        for thread in threads:
+            thread.start()
+        try:
+            # 기본 오프너(urlopen 주입 없이)로 호출합니다.
+            with self.assertRaises(QuotaError) as ctx:
+                fetch_usage(source.server_port, SYNTHETIC_TOKEN)
+            self.assertIn("리디렉션", str(ctx.exception))
+            self.assertEqual(hits, [])
+            self.assertNotIn(SYNTHETIC_TOKEN, str(ctx.exception))
+        finally:
+            source.shutdown()
+            source.server_close()
+            target.shutdown()
+            target.server_close()
+            for thread in threads:
+                thread.join(timeout=5)
 
     def test_no_redirect_handler_blocks(self):
         handler = quota._NoRedirect()
@@ -266,6 +334,21 @@ class FormatTableTest(unittest.TestCase):
     def test_empty_usages_shows_notice(self):
         text = format_table({"data": {"quota": {"usages": {}, "extraUsage": None}}})
         self.assertIn("usages", text)
+
+    def test_top_level_array_payload_shows_empty_table(self):
+        text = format_table([])
+        self.assertIn("usages", text)
+        self.assertIn("extraUsage: 미사용", text)
+
+    def test_null_quota_and_non_dict_sections_are_treated_as_empty(self):
+        from usage_monitor_kimi.quota import extra_usage_summary, quota_windows
+
+        self.assertEqual(quota_windows({"data": {"quota": None}}), [])
+        self.assertIsNone(extra_usage_summary({"data": {"quota": None}}))
+        # usages·extraUsage의 형식이 어긋난 변형 응답도 빈 결과로 봅니다.
+        payload = {"data": {"quota": {"usages": [], "extraUsage": [1, 2]}}}
+        self.assertEqual(quota_windows(payload), [])
+        self.assertIsNone(extra_usage_summary(payload))
 
 
 class QuotaCliTest(unittest.TestCase):

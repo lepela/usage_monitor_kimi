@@ -14,18 +14,14 @@ from .validation import validate
 
 def load_config(sessions_dir, state_dir, incremental):
     source = Path(sessions_dir) if sessions_dir else Path.home() / ".kimi-code" / "sessions"
-    state = Path(state_dir) if state_dir else Path("state")
+    state = Path(state_dir) if state_dir else source.parent / "monitor-state"
     return source, state, incremental
 
 
 def run_scan(args):
     sessions_dir, state_dir, incremental = load_config(args.sessions_dir, args.state_dir,
                                                        args.incremental)
-    result = scan(sessions_dir, state_dir, incremental=incremental)
-    if incremental:
-        path = save_offsets(state_dir, result["state"])
-        result["offsets_saved"] = str(path)
-    return result
+    return scan(sessions_dir, state_dir, incremental=incremental), state_dir
 
 
 def session_details(records):
@@ -53,7 +49,7 @@ def build_parser():
 
     def common(command):
         command.add_argument("--sessions-dir", help="Kimi Code sessions 폴더")
-        command.add_argument("--state-dir", help="증분 상태 폴드 (기본 state/)")
+        command.add_argument("--state-dir", help="증분 상태 폴더 (기본값: sessions 폴더의 monitor-state)")
         command.add_argument("--incremental", action="store_true",
                              help="저장된 오프셋에서 이어 읽고 상태를 갱신합니다")
         return command
@@ -77,7 +73,7 @@ def main(argv=None):
             code, text = run_quota(json_mode=args.json)
             print(text, file=sys.stdout if code == 0 else sys.stderr)
             return code
-        result = run_scan(args)
+        result, state_dir = run_scan(args)
         if args.command == "inspect":
             output = {"scope": "scanned_local_session_files",
                       "scan": {"incremental": args.incremental,
@@ -85,19 +81,19 @@ def main(argv=None):
                       "files": result["files"],
                       "sessions": session_details(result["records"]),
                       "kinds": summarize(result["records"])["kinds"]}
-            if args.incremental:
-                output["offsets_saved"] = result.get("offsets_saved")
         elif args.command == "summary":
             output = {"scan": {"diagnostics": result["diagnostics"]},
                       "summary": summarize(result["records"])}
-            if args.incremental:
-                output["offsets_saved"] = result.get("offsets_saved")
         else:
             report = validate(result["records"])
             report["scan"] = {"diagnostics": result["diagnostics"],
                               "files": result["files"]}
             output = report
         print(json.dumps(output, ensure_ascii=False, indent=2, allow_nan=False))
+        if args.incremental:
+            # 출력 뒤에 오프셋을 저장합니다. 저장 전에 출력이 실패하면
+            # 다음 실행이 다시 읽어 델타가 사라지지 않습니다.
+            save_offsets(state_dir, result["state"])
     except (OSError, ValueError, TypeError) as exc:
         print(f"실행 실패: {exc}", file=sys.stderr)
         return 1

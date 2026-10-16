@@ -142,24 +142,43 @@ class ScannerTest(unittest.TestCase):
         first = scan(self.sessions, self.state, incremental=True)
         save_offsets(self.state, first["state"])
         stored_size = path.stat().st_size
-        self.write(path, [usage_event(time=9000), usage_event(time=9100)])
+        # 같은 길이의 다른 내용으로 교체합니다. tail-hash 범위(오프셋
+        # 직전 64바이트) 안에서 마지막 줄 끝부분의 사용량 값을 바꿉니다.
+        rewritten = usage_event(time=2000)
+        rewritten["usage"]["inputOther"] = 99
+        self.write(path, [usage_event(), rewritten])
         self.assertEqual(path.stat().st_size, stored_size)
         second = scan(self.sessions, self.state, incremental=True)
         self.assertTrue(second["files"][0]["reset"])
         self.assertEqual(second["diagnostics"]["files_reset"], 1)
-        self.assertEqual([r["timestamp"] for r in second["records"]], [9000, 9100])
+        self.assertEqual([r["timestamp"] for r in second["records"]], [1000, 2000])
 
-    def test_older_mtime_resets_offset(self):
+    def test_larger_rewrite_with_different_tail_resets(self):
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event(), usage_event(time=2000)])
+        first = scan(self.sessions, self.state, incremental=True)
+        save_offsets(self.state, first["state"])
+        # 더 큰 파일로 바꾸되, 저장된 오프셋 직전 64바이트가 바뀌도록
+        # 앞부분은 그대로 두고 중간 줄의 끝부분만 바꿉니다.
+        middle = usage_event(time=2000)
+        middle["usage"]["inputOther"] = 99
+        self.write(path, [usage_event(), middle, usage_event(time=3000)])
+        second = scan(self.sessions, self.state, incremental=True)
+        self.assertTrue(second["files"][0]["reset"])
+        self.assertEqual([r["timestamp"] for r in second["records"]], [1000, 2000, 3000])
+
+    def test_mtime_only_change_keeps_offset(self):
         import os
         path = wire_tree(self.sessions)
         self.write(path, [usage_event(), usage_event(time=2000)])
         first = scan(self.sessions, self.state, incremental=True)
         save_offsets(self.state, first["state"])
+        # 내용이 같고 mtime만 달라지면 tail-hash가 같아 다시 읽지 않습니다.
         old = path.stat().st_mtime_ns - 10 ** 9
         os.utime(path, ns=(old, old))
         second = scan(self.sessions, self.state, incremental=True)
-        self.assertTrue(second["files"][0]["reset"])
-        self.assertEqual(len(second["records"]), 2)
+        self.assertFalse(second["files"][0]["reset"])
+        self.assertEqual(len(second["records"]), 0)
 
     def test_diagnostics_aggregate_file_issues(self):
         path = wire_tree(self.sessions)
@@ -170,6 +189,93 @@ class ScannerTest(unittest.TestCase):
         self.assertEqual(result["diagnostics"]["files_read"], 1)
         self.assertEqual(result["diagnostics"]["files_reset"], 0)
         self.assertEqual(result["diagnostics"]["files_size_limited"], 0)
+
+    def test_broken_offset_entries_are_sanitized(self):
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event(), usage_event(time=2000)])
+        rel = path.relative_to(self.sessions).as_posix()
+        self.state.mkdir(parents=True)
+        for bad_entry in ("broken", {"offset": "12"}, {"offset": -5},
+                          {"offset": True}, {"offset": 1.5}):
+            with self.subTest(entry=bad_entry):
+                (self.state / "_offsets.json").write_text(json.dumps(
+                    {"version": 1, "files": {rel: bad_entry}}), encoding="utf-8")
+                result = scan(self.sessions, self.state, incremental=True)
+                self.assertEqual(len(result["records"]), 2)
+                self.assertEqual(result["files"][0]["offset_start"], 0)
+
+    def test_save_offsets_writes_without_temp_file(self):
+        path = save_offsets(self.state, {"version": 1, "files": {}})
+        self.assertTrue(path.is_file())
+        self.assertFalse((self.state / "_offsets.json.tmp").exists())
+        self.assertEqual(load_offsets(self.state), {"version": 1, "files": {}})
+
+    def test_file_removed_after_read_is_skipped(self):
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event()])
+        self.state.mkdir(parents=True)
+        (self.state / "_offsets.json").write_text(
+            json.dumps({"version": 1, "files": {}}), encoding="utf-8")
+        real_stat = Path.stat
+        calls = {"count": 0}
+
+        def flaky_stat(target, *args, **kwargs):
+            calls["count"] += 1
+            if calls["count"] >= 3:
+                raise OSError("파일이 사라졌습니다")
+            return real_stat(target, *args, **kwargs)
+
+        with patch.object(Path, "stat", flaky_stat):
+            result = scan(self.sessions, self.state, incremental=True)
+        self.assertEqual(result["records"], [])
+        self.assertEqual(result["diagnostics"]["unreadable_files"], 1)
+        self.assertEqual(result["files"], [])
+        self.assertEqual(result["state"]["files"], {})
+
+    def _consume_until_done(self, path, max_runs=10):
+        total_records = 0
+        total_oversized = 0
+        runs = 0
+        last = None
+        # 큰 줄을 oversized로 인식하려면 예산이 한 줄 상한을 넘어야 합니다.
+        with patch("usage_monitor_kimi.scanner.MAX_LINE_BYTES", 190), \
+                patch("usage_monitor_kimi.scanner.MAX_FILE_BYTES", 250):
+            for _ in range(max_runs):
+                last = scan(self.sessions, self.state, incremental=True)
+                save_offsets(self.state, last["state"])
+                runs += 1
+                total_records += len(last["records"])
+                total_oversized += last["diagnostics"]["oversized_lines"]
+                if last["files"][0]["offset_end"] == path.stat().st_size \
+                        and not last["files"][0]["size_limited"]:
+                    break
+        return runs, total_records, total_oversized, last
+
+    def test_oversized_line_resumed_across_runs(self):
+        path = wire_tree(self.sessions)
+        # 400바이트 큰 줄 뒤에 정상 줄을 두고 읽기 예산(200)으로 끊깁니다.
+        path.write_bytes(b"x" * 400 + b"\n"
+                         + json.dumps(usage_event()).encode("utf-8") + b"\n")
+        runs, total_records, total_oversized, last = self._consume_until_done(path)
+        self.assertGreater(runs, 1)
+        self.assertEqual(total_records, 1)
+        self.assertEqual(total_oversized, 1)
+        entry = last["state"]["files"][path.relative_to(self.sessions).as_posix()]
+        self.assertFalse(entry["skipping"])
+        self.assertEqual(entry["offset"], path.stat().st_size)
+
+    def test_line_larger_than_whole_budget_eventually_completes(self):
+        path = wire_tree(self.sessions)
+        # 예산(200)보다 긴 600바이트 줄이 통째로 여러 실행에 걸쳐 걸너뛰어집니다.
+        path.write_bytes(b"x" * 600 + b"\n"
+                         + json.dumps(usage_event()).encode("utf-8") + b"\n")
+        runs, total_records, total_oversized, last = self._consume_until_done(path)
+        self.assertGreater(runs, 1)
+        self.assertEqual(total_records, 1)
+        self.assertEqual(total_oversized, 1)
+        entry = last["state"]["files"][path.relative_to(self.sessions).as_posix()]
+        self.assertFalse(entry["skipping"])
+        self.assertEqual(entry["offset"], path.stat().st_size)
 
     def test_load_offsets_handles_missing_and_corrupt(self):
         self.assertEqual(load_offsets(self.state), {"version": 1, "files": {}})

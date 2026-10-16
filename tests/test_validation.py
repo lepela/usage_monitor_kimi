@@ -92,6 +92,23 @@ class ValidationTest(unittest.TestCase):
         target = checks["subagent.completed vs 같은 에이전트 usage.record"]
         self.assertEqual(target["status"], "match")
 
+    def test_subagent_unavailable_adds_no_issue(self):
+        # subagent.completed 기록이 없는 데이터에서는 대조 자체가 없는
+        # 것이 정상이므로 '검증 불가' 잡음을 내지 않습니다.
+        report = validate([record("usage", usage(1, 1, 0, 0), agent="main")])
+        self.assertFalse(any("subagent.completed" in issue for issue in report["issues"]))
+
+    def test_subagent_match_with_missing_fields_is_incomplete(self):
+        records = [record("usage", {"inputOther": 1, "output": None,
+                                    "inputCacheRead": None,
+                                    "inputCacheCreation": None}, agent="agent-1"),
+                   record("subagent", usage(1, 0, 0, 0), agent="agent-1")]
+        checks = {c["name"]: c for c in cross_checks(records)}
+        target = checks["subagent.completed vs 같은 에이전트 usage.record"]
+        self.assertEqual(target["status"], "incomplete")
+        report = validate(records)
+        self.assertTrue(any("누락 필드" in issue for issue in report["issues"]))
+
 
 if __name__ == "__main__":
     unittest.main()

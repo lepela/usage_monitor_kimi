@@ -69,6 +69,28 @@ class CliTest(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(text)["summary"]["totals"]["count"], 0)
 
+    def test_incremental_default_state_dir_is_sibling_of_sessions(self):
+        code, _ = self.run_cli(["summary", "--sessions-dir", str(self.sessions),
+                                "--incremental"])
+        self.assertEqual(code, 0)
+        default_state = self.sessions.parent / "monitor-state"
+        self.assertTrue((default_state / "_offsets.json").is_file())
+        self.assertFalse((Path("state") / "_offsets.json").exists())
+
+    def test_inspect_output_has_no_offsets_saved_field(self):
+        code, text = self.run_cli(["inspect", "--sessions-dir", str(self.sessions),
+                                   "--state-dir", str(self.state), "--incremental"])
+        self.assertEqual(code, 0)
+        self.assertNotIn("offsets_saved", json.loads(text))
+
+    def test_offsets_not_saved_when_output_fails(self):
+        from unittest import mock
+        with mock.patch("builtins.print", side_effect=[OSError("출력 실패"), None]):
+            code = main(["summary", "--sessions-dir", str(self.sessions),
+                         "--state-dir", str(self.state), "--incremental"])
+        self.assertEqual(code, 1)
+        self.assertFalse((self.state / "_offsets.json").exists())
+
     def test_missing_sessions_dir_fails(self):
         code, _ = self.run_cli(["inspect", "--sessions-dir", str(self.root / "missing")])
         self.assertEqual(code, 1)

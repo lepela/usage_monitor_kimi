@@ -38,7 +38,7 @@ def field_coverage(records, kinds=(USAGE_KIND,)):
 
 
 def arithmetic_bounds(records, kinds=(USAGE_KIND, MESSAGE_KIND, "subagent")):
-    """음수 값과 캐시 산술 위반을 찾습니다.
+    """음수 값을 찾습니다.
 
     파서가 음수·비정수를 허용하지 않으므로 이 검사는 파서를 우회한
     레코드에 대한 방어선입니다. 이 스키마는 레코드 안에 합계 필드가
@@ -54,7 +54,7 @@ def arithmetic_bounds(records, kinds=(USAGE_KIND, MESSAGE_KIND, "subagent")):
                           ("inputOther", "inputCacheRead", "inputCacheCreation"))
         negative = any(isinstance(value, int) and not isinstance(value, bool) and value < 0
                        for value in usage.values())
-        if negative or cache_read > input_total:
+        if negative:
             violations.append({"file": record.get("file"), "timestamp": record.get("timestamp"),
                                "kind": record["kind"], "cache_read": cache_read,
                                "input_total": input_total, "negative": negative})
@@ -111,20 +111,27 @@ def cross_checks(records):
                            "장기 관찰이 필요합니다."})
     subagent = [r for r in records if r["kind"] == "subagent"]
     subagent_usage = [r for r in usage if (r.get("agent") or "") != "main"]
-    sub_total, _ = usage_sum(subagent)
-    sub_usage_total, _ = usage_sum(subagent_usage)
+    sub_total, sub_missing = usage_sum(subagent)
+    sub_usage_total, sub_usage_missing = usage_sum(subagent_usage)
     comparable = bool(subagent) and bool(subagent_usage)
+    if not comparable:
+        status = "unavailable"
+    elif sub_total != sub_usage_total:
+        status = "mismatch"
+    elif sub_missing or sub_usage_missing:
+        status = "incomplete"
+    else:
+        status = "match"
     checks.append({"name": "subagent.completed vs 같은 에이전트 usage.record",
                    "left_count": len(subagent), "right_count": len(subagent_usage),
                    "left_sum": sub_total if subagent else None,
                    "right_sum": sub_usage_total if subagent_usage else None,
                    "difference": sub_total - sub_usage_total if comparable else None,
-                   "comparable": comparable,
-                   "status": ("match" if sub_total == sub_usage_total else "mismatch")
-                   if comparable else "unavailable",
+                   "comparable": comparable, "status": status, "optional": True,
                    "note": "완료 단위 합계와 main이 아닌 에이전트의 요청 단위 합계 비교입니다. "
                            "같은 사용량을 중복 기록하면 합계가 같거나 배로 늘어나 "
-                           "중복 양상을 관찰할 수 있습니다."})
+                           "중복 양상을 관찰할 수 있습니다. 누락 필드가 있는 레코드가 "
+                           "포함되면 합계가 같아도 incomplete으로 표시합니다."})
     return checks
 
 
@@ -136,14 +143,15 @@ def validate(records):
     for check in checks:
         if check["status"] == "mismatch":
             issues.append(f"{check['name']}: 합계 차이 {check['difference']} 토큰 (확인 필요)")
-        elif check["status"] == "unavailable":
+        elif check["status"] == "incomplete":
+            issues.append(f"{check['name']}: 누락 필드와 함께 비교됨 (확인 필요)")
+        elif check["status"] == "unavailable" and not check.get("optional"):
             issues.append(f"{check['name']}: 비교할 기록이 없어 검증 불가")
     for key, field in coverage["fields"].items():
         if field["missing"]:
             issues.append(f"{key}: 누락 {field['missing']}건 (확인 필요)")
     for violation in bounds["violations"]:
-        issues.append(f"산술 위반: {violation['file']} "
-                      f"inputCacheRead가 입력 합계를 초과하거나 음수 값 존재 (확인 필요)")
+        issues.append(f"산술 위반: {violation['file']} 음수 값 존재 (확인 필요)")
     return {"field_coverage": coverage, "arithmetic_bounds": bounds,
             "cross_checks": checks, "issues": issues,
             "issue_count": len(issues)}

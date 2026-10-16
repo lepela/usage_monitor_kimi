@@ -1,5 +1,6 @@
 """로컬 서버의 공식 쿼터 조회를 제공합니다."""
 
+import http.client
 import json
 import os
 import urllib.error
@@ -131,7 +132,15 @@ def fetch_usage(port, token, host="127.0.0.1", urlopen=None):
         with urlopen(request, timeout=TIMEOUT_SECONDS) as response:
             body = response.read()
     except urllib.error.HTTPError as exc:
+        fp = getattr(exc, "fp", None)
+        if fp is not None:
+            try:
+                fp.close()
+            except OSError:
+                pass
         raise QuotaError(_http_error_message(exc.code)) from exc
+    except http.client.HTTPException as exc:
+        raise QuotaError(f"로컬 서버의 응답이 HTTP 규약을 어겼습니다: {exc}") from exc
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
         reason = getattr(exc, "reason", exc)
         raise QuotaError(f"로컬 서버에 연결할 수 없습니다 (포트 {port}): {reason}") from exc
@@ -163,12 +172,29 @@ def format_reset_at(value):
     return str(value)
 
 
+def _quota_section(payload):
+    """응답의 data.quota 부분을 dict로 정규화해 반환합니다.
+
+    최상위가 배열이거나 quota가 null인 변형 응답에서도 빈 dict를
+    반환해 이후 처리가 traceback 없이 끝나게 합니다.
+    """
+    if not isinstance(payload, dict):
+        return {}
+    data = payload.get("data")
+    if not isinstance(data, dict):
+        return {}
+    quota = data.get("quota")
+    return quota if isinstance(quota, dict) else {}
+
+
 def quota_windows(payload):
     """응답에서 창별 usedRatio·resetAt을 (이름, 레이블, usedRatio, resetAt) 목록로 반환합니다."""
-    usages = ((payload or {}).get("data") or {}).get("quota", {}).get("usages", {})
+    usages = _quota_section(payload).get("usages")
+    if not isinstance(usages, dict):
+        usages = {}
     rows = []
     for name, info in usages.items():
-        info = info or {}
+        info = info if isinstance(info, dict) else {}
         rows.append((name, WINDOW_LABELS.get(name, name),
                      info.get("usedRatio"), info.get("resetAt")))
     return rows
@@ -176,8 +202,8 @@ def quota_windows(payload):
 
 def extra_usage_summary(payload):
     """extraUsage가 있으면 잔액 요약 문자열을, 없으면 None을 반환합니다."""
-    extra = ((payload or {}).get("data") or {}).get("quota", {}).get("extraUsage")
-    if not extra:
+    extra = _quota_section(payload).get("extraUsage")
+    if not isinstance(extra, dict):
         return None
     parts = []
     if "balanceCents" in extra:
