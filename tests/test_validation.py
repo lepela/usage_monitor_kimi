@@ -75,6 +75,23 @@ class ValidationTest(unittest.TestCase):
         report = validate(records)
         self.assertTrue(any("output" in issue and "누락" in issue for issue in report["issues"]))
 
+    def test_cross_checks_compare_subagent_vs_agent_usage(self):
+        records = [record("usage", usage(5, 5, 0, 0), agent="main"),
+                   record("usage", usage(1, 1, 0, 0), agent="agent-1"),
+                   record("subagent", usage(9, 9, 0, 0), agent="agent-1")]
+        checks = {c["name"]: c for c in cross_checks(records)}
+        target = checks["subagent.completed vs 같은 에이전트 usage.record"]
+        self.assertEqual(target["status"], "mismatch")
+        report = validate(records)
+        self.assertTrue(any("subagent.completed" in issue for issue in report["issues"]))
+
+    def test_cross_checks_subagent_match(self):
+        records = [record("usage", usage(1, 1, 0, 0), agent="agent-1"),
+                   record("subagent", usage(1, 1, 0, 0), agent="agent-1")]
+        checks = {c["name"]: c for c in cross_checks(records)}
+        target = checks["subagent.completed vs 같은 에이전트 usage.record"]
+        self.assertEqual(target["status"], "match")
+
 
 if __name__ == "__main__":
     unittest.main()

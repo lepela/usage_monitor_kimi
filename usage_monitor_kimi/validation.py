@@ -109,6 +109,22 @@ def cross_checks(records):
                    if comparable else "unavailable",
                    "note": "measured의 tokens가 요청 사용량과 같은 의미인지는 "
                            "장기 관찰이 필요합니다."})
+    subagent = [r for r in records if r["kind"] == "subagent"]
+    subagent_usage = [r for r in usage if (r.get("agent") or "") != "main"]
+    sub_total, _ = usage_sum(subagent)
+    sub_usage_total, _ = usage_sum(subagent_usage)
+    comparable = bool(subagent) and bool(subagent_usage)
+    checks.append({"name": "subagent.completed vs 같은 에이전트 usage.record",
+                   "left_count": len(subagent), "right_count": len(subagent_usage),
+                   "left_sum": sub_total if subagent else None,
+                   "right_sum": sub_usage_total if subagent_usage else None,
+                   "difference": sub_total - sub_usage_total if comparable else None,
+                   "comparable": comparable,
+                   "status": ("match" if sub_total == sub_usage_total else "mismatch")
+                   if comparable else "unavailable",
+                   "note": "완료 단위 합계와 main이 아닌 에이전트의 요청 단위 합계 비교입니다. "
+                           "같은 사용량을 중복 기록하면 합계가 같거나 배로 늘어나 "
+                           "중복 양상을 관찰할 수 있습니다."})
     return checks
 
 

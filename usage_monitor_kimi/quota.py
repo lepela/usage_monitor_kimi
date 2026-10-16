@@ -30,6 +30,22 @@ class QuotaError(Exception):
     """quota 조회의 실패와 사용자 안내를 담습니다."""
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """리디렉션을 따르지 않습니다.
+
+    조회 대상은 127.0.0.1의 로컬 서버입니다. 리디렉션에 따라가면
+    Authorization 헤더가 이동 대상에 전달될 수 있어 차단합니다.
+    """
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
+# 환경 변수로 설정된 프록시를 거치지 않는 오프너입니다. 프록시를 거치면
+# Bearer 토큰이 프록시에 전달될 수 있어 127.0.0.1 요청에는 프록시를
+# 적용하지 않습니다.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
 def _pid_running(pid):
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
@@ -93,17 +109,21 @@ def _http_error_message(code):
         return "인증에 실패했습니다 (HTTP 401). server.token이 갱신되었을 수 있으니 다시 시도합니다."
     if code == 404:
         return "쿼터 경로를 찾지 못했습니다 (HTTP 404). 로컬 서버 버전이 지원하지 않을 수 있습니다."
+    if 300 <= code < 400:
+        return (f"로컬 서버가 리디렉션을 반환해 차단했습니다 (HTTP {code}). "
+                "로컬 서버의 응답이 예상과 다릅니다.")
     return f"로컬 서버가 오류를 반환했습니다 (HTTP {code})."
 
 
 def fetch_usage(port, token, host="127.0.0.1", urlopen=None):
     """GET /api/v1/oauth/usage 응답을 파싱해 반환합니다.
 
-    urlopen은 테스트용 주입 지점이며, 기본값은 urllib.request.urlopen입니다.
+    urlopen은 테스트용 주입 지점입니다. 기본값은 프록시를 거치지 않고
+    리디렉션을 따르지 않는 오프너입니다.
     server.token 값은 요청 헤더에만 담고 어디에도 출력·저장·로그하지 않습니다.
     """
     if urlopen is None:
-        urlopen = urllib.request.urlopen
+        urlopen = _OPENER.open
     url = f"http://{host}:{port}{USAGE_PATH}"
     request = urllib.request.Request(
         url, headers={"Authorization": f"Bearer {token}", "Accept": "application/json"})

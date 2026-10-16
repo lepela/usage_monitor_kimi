@@ -20,7 +20,7 @@ python -m unittest discover -s tests -t .
 - `inspect`: 파일·세션별 수집 상세(파일당 오프셋·건수, 세션별 사용량)를 JSON으로 출력합니다.
 - `summary`: 합계, 일별·모델별·에이전트별 집계, main 대비 하위 에이전트 사용량, 캐시 읽기 비중을 JSON으로 출력합니다.
 - `validate`: 필드 수신 범위, 산술 방어 검사, 그리고 `usage.record` ↔ `token_counting.*` ↔ `agent.message.appended`의 내재 대조 결과를 출력합니다. 차이는 "확인 필요" 항목으로 표시됩니다.
-- `quota`: 실행 중인 로컬 서버(`~/.kimi-code/server/instances`)를 찾아 공식 쿼터 엔드포인트(`GET /api/v1/oauth/usage`)를 조회해 창별(5시간·월 전체·월 코드, 레거시 플랜은 7일) `usedRatio`·`resetAt`(로컬 시각 병기)과 `extraUsage` 요약을 표로 출력합니다. `--json`을 주면 원본 응답을 그대로 출력합니다. 데스크톱 앱이나 `kimi web`이 실행 중일 때만 조회할 수 있습니다.
+- `quota`: 실행 중인 로컬 서버(`~/.kimi-code/server/instances`)를 찾아 공식 쿼터 엔드포인트(`GET /api/v1/oauth/usage`)를 조회해 창별(5시간·월 전체·월 코드, 레거시 플랜은 7일) `usedRatio`·`resetAt`(로컬 시각 병기)과 `extraUsage` 요약을 표로 출력합니다. `--json`을 주면 원본 응답을 그대로 출력합니다. 데스크톱 앱이나 `kimi web`이 실행 중일 때만 조회할 수 있습니다. 요청은 프록시를 거치지 않으며 리디렉션은 차단합니다.
 - 기본값은 전체 스캔입니다. `--incremental`을 주면 `state/_offsets.json`에 저장된 오프셋에서 이어 읽고, 명령은 이번에 새로 읽은 기록만 집계 대상으로 합니다.
 
 ## 현재 동작

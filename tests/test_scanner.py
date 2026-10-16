@@ -116,6 +116,61 @@ class ScannerTest(unittest.TestCase):
             result = read_wire(path)
         self.assertTrue(result["size_limited"])
 
+    def test_file_byte_limit_is_per_run(self):
+        events = [usage_event(time=1000 + i) for i in range(10)]
+        path = wire_tree(self.sessions)
+        self.write(path, events)
+        offset = 0
+        total = 0
+        runs = 0
+        with patch("usage_monitor_kimi.scanner.MAX_FILE_BYTES", 500):
+            for _ in range(20):
+                result = read_wire(path, start_offset=offset)
+                runs += 1
+                total += len(result["records"])
+                offset = result["end_offset"]
+                if not result["size_limited"]:
+                    break
+        self.assertGreater(runs, 1)
+        self.assertEqual(total, 10)
+        self.assertFalse(result["size_limited"])
+        self.assertEqual(offset, path.stat().st_size)
+
+    def test_same_size_rewrite_resets_offset(self):
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event(), usage_event(time=2000)])
+        first = scan(self.sessions, self.state, incremental=True)
+        save_offsets(self.state, first["state"])
+        stored_size = path.stat().st_size
+        self.write(path, [usage_event(time=9000), usage_event(time=9100)])
+        self.assertEqual(path.stat().st_size, stored_size)
+        second = scan(self.sessions, self.state, incremental=True)
+        self.assertTrue(second["files"][0]["reset"])
+        self.assertEqual(second["diagnostics"]["files_reset"], 1)
+        self.assertEqual([r["timestamp"] for r in second["records"]], [9000, 9100])
+
+    def test_older_mtime_resets_offset(self):
+        import os
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event(), usage_event(time=2000)])
+        first = scan(self.sessions, self.state, incremental=True)
+        save_offsets(self.state, first["state"])
+        old = path.stat().st_mtime_ns - 10 ** 9
+        os.utime(path, ns=(old, old))
+        second = scan(self.sessions, self.state, incremental=True)
+        self.assertTrue(second["files"][0]["reset"])
+        self.assertEqual(len(second["records"]), 2)
+
+    def test_diagnostics_aggregate_file_issues(self):
+        path = wire_tree(self.sessions)
+        self.write(path, [usage_event()])
+        with patch("usage_monitor_kimi.scanner.MAX_LINE_BYTES", 10):
+            result = scan(self.sessions)
+        self.assertEqual(result["diagnostics"]["oversized_lines"], 1)
+        self.assertEqual(result["diagnostics"]["files_read"], 1)
+        self.assertEqual(result["diagnostics"]["files_reset"], 0)
+        self.assertEqual(result["diagnostics"]["files_size_limited"], 0)
+
     def test_load_offsets_handles_missing_and_corrupt(self):
         self.assertEqual(load_offsets(self.state), {"version": 1, "files": {}})
         self.state.mkdir(parents=True)

@@ -50,12 +50,33 @@ def save_offsets(state_dir, state):
     return path
 
 
+def _entry_rewritten(entry, current):
+    """저장된 크기·수정 시각이 현재 파일과 어긋나면 재작성으로 본다.
+
+    더 큰 파일로의 재작성은 내용 식별자가 없어 추가와 구분할 수 없다.
+    오프셋을 존중해 이어 읽는다.
+    """
+    stored_size = entry.get("size")
+    stored_mtime = entry.get("mtime_ns")
+    if isinstance(stored_size, int) and current.st_size < stored_size:
+        return True
+    if isinstance(stored_mtime, int) and current.st_mtime_ns < stored_mtime:
+        return True
+    if (isinstance(stored_size, int) and current.st_size == stored_size
+            and isinstance(stored_mtime, int)
+            and current.st_mtime_ns != stored_mtime):
+        return True
+    return False
+
+
 def read_wire(path, start_offset=0, agent=None, session=None, workspace=None,
               source=None):
     """하나의 wire.jsonl을 읽어 화이트리스트 레코드만 반환합니다.
 
     오프셋은 완결된 줄까지만 앞으로 갱신합니다. 줄 끝 개행이 없는
     마지막 줄은 기록 중일 수 있으므로 다음 실행에 넘깁니다.
+    한 번 실행에 읽는 양은 MAX_FILE_BYTES로 제한하고, 제한 지점부터는
+    다음 증분 실행이 이어 읽습니다.
     """
     path = Path(path)
     malformed = oversized = 0
@@ -68,17 +89,22 @@ def read_wire(path, start_offset=0, agent=None, session=None, workspace=None,
             start_offset = 0
             reset = True
         stream.seek(start_offset)
+        budget = MAX_FILE_BYTES
         read_bytes = start_offset
         complete_through = start_offset
-        while read_bytes < MAX_FILE_BYTES:
-            line = stream.readline(min(MAX_LINE_BYTES + 1, MAX_FILE_BYTES - read_bytes))
+        while budget > 0:
+            line = stream.readline(min(MAX_LINE_BYTES + 1, budget))
             if not line:
                 break
+            budget -= len(line)
             read_bytes += len(line)
             if len(line) > MAX_LINE_BYTES:
                 oversized += 1
-                while line and not line.endswith(b"\n") and read_bytes < MAX_FILE_BYTES:
-                    line = stream.readline(min(MAX_LINE_BYTES, MAX_FILE_BYTES - read_bytes))
+                while line and not line.endswith(b"\n") and budget > 0:
+                    line = stream.readline(min(MAX_LINE_BYTES, budget))
+                    if not line:
+                        break
+                    budget -= len(line)
                     read_bytes += len(line)
                 if line and line.endswith(b"\n"):
                     complete_through = read_bytes
@@ -98,7 +124,7 @@ def read_wire(path, start_offset=0, agent=None, session=None, workspace=None,
             record.update(file=source or path.name, agent=record.get("agent") or agent,
                           session=session, workspace=workspace)
             records.append(record)
-        if read_bytes >= MAX_FILE_BYTES:
+        if budget <= 0:
             size_limited = bool(stream.read(1))
     return {"records": records, "end_offset": complete_through, "reset": reset,
             "malformed_lines": malformed, "oversized_lines": oversized,
@@ -113,7 +139,7 @@ def scan(sessions_dir, state_dir=None, *, incremental=False, offsets=None):
     """
     sessions_dir = Path(sessions_dir)
     if not sessions_dir.is_dir():
-        raise FileNotFoundError(f"세션 폴더가 없습니다: {sessions_dir}")
+        raise FileNotFoundError(f"세션 폴드가 없습니다: {sessions_dir}")
     candidates, unreadable = discover(sessions_dir)
     if incremental:
         state = offsets if offsets is not None else load_offsets(state_dir or ".")
@@ -127,14 +153,26 @@ def scan(sessions_dir, state_dir=None, *, incremental=False, offsets=None):
         agent = path.parent.name
         session = path.parent.parent.parent.name
         workspace = path.parent.parent.parent.parent.name
-        entry = files_state.get(rel, {})
+        entry = files_state.get(rel, {}) if incremental else {}
         start = int(entry.get("offset", 0)) if incremental else 0
+        rewritten = False
+        if incremental and entry:
+            try:
+                current = path.stat()
+            except OSError:
+                unreadable += 1
+                continue
+            if _entry_rewritten(entry, current):
+                start = 0
+                rewritten = True
         try:
             result = read_wire(path, start_offset=start, agent=agent,
                                session=session, workspace=workspace, source=rel)
         except OSError:
             unreadable += 1
             continue
+        if rewritten:
+            result["reset"] = True
         records.extend(result["records"])
         stat = path.stat()
         files_state[rel] = {"offset": result["end_offset"], "size": stat.st_size,
@@ -146,6 +184,10 @@ def scan(sessions_dir, state_dir=None, *, incremental=False, offsets=None):
                       "oversized_lines": result["oversized_lines"],
                       "size_limited": result["size_limited"]})
     diagnostics = {"files_discovered": len(candidates), "files_read": len(files),
-                   "unreadable_files": unreadable}
+                   "unreadable_files": unreadable,
+                   "files_reset": sum(1 for item in files if item["reset"]),
+                   "files_size_limited": sum(1 for item in files if item["size_limited"]),
+                   "malformed_lines": sum(item["malformed_lines"] for item in files),
+                   "oversized_lines": sum(item["oversized_lines"] for item in files)}
     return {"records": records, "files": files, "state": state,
             "diagnostics": diagnostics}

@@ -208,6 +208,52 @@ class FetchUsageTest(unittest.TestCase):
             fetch_usage(59999, SYNTHETIC_TOKEN, urlopen=lambda req, timeout: FakeResponse())
         self.assertIn("JSON", str(ctx.exception))
 
+    def test_opener_has_no_proxy_handler(self):
+        handlers = [h for h in quota._OPENER.handlers
+                    if isinstance(h, urllib.request.ProxyHandler)]
+        self.assertEqual(handlers, [])
+
+    def test_fetch_ignores_env_proxy(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *args):
+                pass
+
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with mock.patch.dict(os.environ,
+                                 {"HTTP_PROXY": "http://255.255.255.255:9",
+                                  "http_proxy": "http://255.255.255.255:9"}):
+                payload = fetch_usage(server.server_port, SYNTHETIC_TOKEN)
+            self.assertEqual(payload, {})
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+    def test_no_redirect_handler_blocks(self):
+        handler = quota._NoRedirect()
+        self.assertIsNone(handler.redirect_request(None, None, 302, "Found", {},
+                                                   "http://elsewhere/"))
+
+    def test_fetch_maps_redirect_to_quota_error(self):
+        def fake_urlopen(request, timeout):
+            raise urllib.error.HTTPError(request.full_url, 302, "Found",
+                                         hdrs=None, fp=None)
+        with self.assertRaises(QuotaError) as ctx:
+            fetch_usage(59999, SYNTHETIC_TOKEN, urlopen=fake_urlopen)
+        self.assertIn("리디렉션", str(ctx.exception))
+        self.assertNotIn(SYNTHETIC_TOKEN, str(ctx.exception))
+
 
 class FormatTableTest(unittest.TestCase):
     def test_iso_reset_at_is_shown_with_local_time(self):
